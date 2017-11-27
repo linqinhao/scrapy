@@ -1,0 +1,135 @@
+import re
+from scrapy import Spider,Request
+from bs4 import BeautifulSoup as bs
+from fidger.items import AmzItem
+from fidger.items import AmazoneItem
+from scrapy import FormRequest
+
+
+class AmzSpider(Spider):
+    name = 'amz'
+    allowed_domains = ['amzone.com']
+    start_urls = ['http://amzone.com/']
+
+    def start_requests(self):
+        url = "https://www.amazon.com/s/ref=sr_pg_1?fst=p90x%3A1&rh=n%3A165793011%2Cn%3A%21165795011%2Cn%3A166027011%2Cn%3A17238448011%2Cn%3A17238450011&ie=UTF8&qid=1511410922"
+        yield Request(url=url,callback=self.parse,dont_filter=1)
+
+
+
+    def parse(self, response):
+        master_url = "https://www.amazon.com"
+        bsobj = bs(response.text)
+        sku_tag = bsobj.find_all("li",{"id":re.compile("result_[0-9]+")})
+        for i in sku_tag:
+            dict = {}
+            sku_url = i.find("a",{"class":re.compile("a-link-normal.+")})
+            sku_url = sku_url.attrs["href"]
+            asin = i.attrs["data-asin"]
+            try:
+                price = i.find("span",{"class":"sx-price-whole"}).text
+            except:
+                price = None
+            try:
+                fprice = i.find("sup",{"class":"sx-price-fractional"}).text
+            except:
+                fprice = 0
+            if price != None:
+                price = str(price)+str(".")+str(fprice)
+            if master_url not in sku_url:
+                sku_url = master_url + sku_url
+            dict["price"] = price
+            dict["url"] = sku_url
+            dict["asin"] = asin
+
+            yield Request(url=sku_url,callback=self.parse_detail,dont_filter=1,meta=dict.copy())
+
+
+        next_tag = bsobj.find("a",{"class":"pagnNext"},{"title":"Next Page"})
+        print(next_tag,"fuck")
+        if next_tag:
+            next_url = master_url + next_tag.attrs["href"]
+            yield Request(url=next_url,callback=self.parse,dont_filter=1)
+
+    def parse_detail(self,response):
+        item = AmzItem()
+        bsobj = bs(response.text)
+        item["asin"] = response.meta["asin"]
+        item["url"] = response.meta["url"]
+        item["price"] = response.meta["price"]
+        try:
+            seller = bsobj.find("a",{"id":"bylineInfo"},{"class":"a-link-normal"}).text
+        except:
+            seller = None
+        item["seller"] = seller
+        try:
+            reviews = bsobj.find("span",{"id":"acrCustomerReviewText"},{"class":"a-size-base"}).text.replace(" customer reviews","")
+        except:
+            reviews = None
+        item["reviews"] = reviews
+        try:
+            icon_tag = bsobj.find("i",{"class":re.compile("a-icon a-icon-star a-star.+")})
+            icon =icon_tag.find("span").text.replace(" out of 5 stars","")
+        except:
+            icon = None
+        item["icon"] = icon
+        yield item
+ 
+ 
+ class FeedbackSpider(scrapy.Spider):
+    name = 'feedback'
+    allowed_domains = ['amazone.com']
+    start_urls = ['http://amazone.com/']
+
+    def start_requests(self):
+        while True:
+            res = requests.get("http://127.0.0.1:5000/asin")
+            if "fuck" in res.text:
+                break
+            data = res.text.replace("'", "").replace("[", "").replace("]", "").split(",")
+            asin = "B072DX9WMB"
+            scroe = 23
+            print(asin,scroe)
+            data = {"sortBy": "",
+                    "reviewerType": "",
+                    "formatType": "",
+                    "mediaType": "",
+                    "filterByStar": "",
+                    "pageNumber": "",
+                    "filterByKeyword": "",
+                    "shouldAppend": "undefined",
+                    "deviceType": "desktop",
+                    "reftag": "",
+                    "pageSize": "",
+                    "asin": asin,
+                    "scope": ""
+                    }
+            count = int(scroe) // 50
+            if int(scroe) % 50 != 0 and int(scroe) > 50:
+                count += 1
+            for i in range(count):
+                data["asin"] = asin
+                data["pageSize"] = str(50)
+                data["pageNumber"] = str(i + 1)
+                data["reftag"] = "cm_cr_getr_d_paging_btm_{}".format(str(i + 1))
+                data["scope"] = "reviewsAjax{}".format(i)
+                Data = data.copy()
+                url = "https://www.amazon.com/ss/customer-reviews/ajax/reviews/get/ref=cm_cr_getr_d_paging_btm_{}".format(i+1)
+                yield FormRequest(url=url,formdata=Data,callback=self.parse_feedback,dont_filter=True,meta={"asin":asin})
+                break
+            break
+
+    def parse_feedback(self,response):
+        feedbacks = re.findall(r"\"append\",\"#cm_cr-review_list.+</div></div></div></div></div>", response.text)
+        asin = response.meta
+        for feedback in feedbacks:
+            item = AmazoneItem()
+            time = re.findall(r">on [A-Z].+201[0-7]", feedback)
+            stars = re.findall(r"[0-5]\.[0-5] out of 5 stars", feedback)
+            text = re.findall(r"review-text.+review-comments comments-for", feedback)
+            item["time"] = time
+            item["stars"] = stars
+            item["text"] = text
+            item["asin"] = asin["asin"]
+            yield item
+ 
