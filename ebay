@@ -1,0 +1,96 @@
+# -*- coding: utf-8 -*-
+import re
+from scrapy import Request,Spider
+from bs4 import BeautifulSoup as bs
+from fidger.items import FidgerItem
+
+class EbaySpider(Spider):
+    name = 'ebay'
+    allowed_domains = ['ebay.com']
+    start_urls = ['http://ebay.com/']
+
+    def start_requests(self):
+        url = "https://www.ebay.com/sch/i.html?_from=R40&_trksid=p2047675.m570.l1313.TR0.TRC0.H0.XFidget+Spinner+.TRS0&_nkw=Fidget+Spinner+&_sacat=0"
+        yield Request(url=url,callback=self.parse,dont_filter=1)
+
+    def parse(self, response):
+        res = bs(response.text)
+        next_pgn = res.find("a",{"class":"gspr next"},{"aria-label":"Next page of results"})
+        s_tags = res.find_all("a",{"class":"vip"})
+        for tag in s_tags:
+            try:
+                url = tag.attrs["href"]
+            except:
+                url = None
+            if url:
+                yield Request(url=url,callback=self.parse_detail,dont_filter=1)
+        #if next_pgn:
+         #   next_url = next_pgn.attrs["href"]
+          #  yield Request(url=next_url,callback=self.parse)
+           # print(next_url)
+        for i in range(1,100):
+            url = "https://www.ebay.com/sch/i.html?_from=R40&_sacat=0&_nkw=Fidget+Spinner&_pgn={}&_skc={}&rt=nc"
+            skc = i*50
+            pgn = i+1
+            next_url = url.format(pgn,skc)
+            yield Request(url=next_url, callback=self.parse)
+
+
+    def parse_detail(self,response):
+        item = FidgerItem()
+        metadata = {}
+        bsobj = bs(response.text)
+        sold_tag = bsobj.find("a", {"href": re.compile("http://offer.ebay.com/ws/eBayISAPI.dll.+")},text=re.compile('[0-9]+ sold'))
+        metadata["feedback"] = response.xpath('//span[@class="mbg-l"]/a/text()').extract_first()
+        metadata["location"] = response.xpath('//span[@itemprop="availableAtOrFrom"]/text()').extract_first()
+        metadata["price"] = response.css(".notranslate::text").extract_first()
+        metadata["seller"] = response.css(".mbg-nw::text").extract()
+        metadata["sku_name"] = response.css(".it-ttl::text").extract()
+        try:
+            metadata["revision_url"] = bsobj.find("a",text="View all revisions").attrs["href"]
+        except:
+            metadata["revision_url"] = None
+
+        if sold_tag:
+            metadata["sold"] = sold_tag.text
+            sold_url = sold_tag.attrs["href"]
+            yield Request(url=sold_url,callback=self.parse_sold_de,meta=metadata.copy(),dont_filter=1)
+
+        else:
+            metadata["sold"] = None
+            rev_url = metadata["revision_url"]
+            if rev_url:
+                yield Request(url=rev_url,callback=self.rev_parse,dont_filter=1,meta=metadata.copy())
+            else:
+                for field in item.fields:
+                    if field in metadata.keys():
+                        item[field] = metadata.get(field)
+                yield item
+
+
+
+    def parse_sold_de(self,response):
+        item = FidgerItem()
+        response.meta["data"] = response.css(".contentValueFont::text").extract()
+        rev_url = response.meta["revision_url"]
+        if rev_url:
+            yield Request(url=rev_url,callback=self.rev_parse,dont_filter=1,meta=response.meta)
+        else:
+            for field in item.fields:
+                if field in response.meta.keys():
+                    item[field] = response.meta.get(field)
+            yield item
+
+
+    def rev_parse(self,response):
+        item = FidgerItem()
+        bsobj = bs(response.text)
+        time_tag = bsobj.find("td",{"width":"10%"},{"valign":"top"})
+        if time_tag:
+            response.meta["time"] = time_tag.text
+        else:
+            response.meta["time"] = None
+        for field in item.fields:
+            if field in response.meta.keys():
+                item[field] =response.meta.get(field)
+        yield item
