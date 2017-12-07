@@ -1,0 +1,96 @@
+import re
+from scrapy import Spider,Request
+from bs4 import BeautifulSoup as bs
+from tianmao.items import TianmaoItem
+import requests
+
+class TmSpider(Spider):
+    name = 'TM'
+    allowed_domains = ['www.tmall.com']
+    start_urls = ['http://www.tmall.com/']
+
+    def start_requests(self):
+        start_url = "https://list.tmall.com/search_product.htm?spm=a222t.7794920.fssubnav.32.600213a5XvNpb5&cat=56226007&sort=s&acm=lb-zebra-29472-346471.1003.8.466141&style=g&search_condition=4&theme=486&industryCatId=50928018&active=1&from=sn_1_cat&scm=1003.8.lb-zebra-29472-346471.ITEM_14439993564011_466141#J_crumbs"
+        yield Request(url=start_url,callback=self.parse,dont_filter=1)
+    def parse(self, response):
+        bsobj = bs(response.text)
+        item_datas = bsobj.find_all("div", {"class": "product item-1111 "})
+        next_pg = bsobj.find("a", {"class": "ui-page-next"}).attrs["href"]
+        for data in item_datas:
+            dict = {}
+            id = data.attrs["data-id"]
+            price = data.find("p", {"class": "productPrice"}).find("em").get_text()
+            titles_tag = data.find("div", {"class": re.compile("productTitle.+")})
+            title_tag = titles_tag.find_all("a")
+            sku_url = title_tag[0].attrs["href"]
+            title_data = [data.get_text().replace("\n", "") for tag in title_tag]
+            seller = data.find("div", {"class": "productShop"}).find("a").get_text()
+            mouth_sold = data.find("p", {"class": "productStatus"}).find("em").get_text()
+            link_sku = "https:{}".format(sku_url)
+            prams = link_sku.split("&")
+            cat_id = [pram.replace("cat_id=", "") for pram in prams if "cat_id=" in pram][0]
+            print(link_sku,id, title_data, price, seller, mouth_sold)
+            dict["id"] = id
+            dict["cat_id"] = cat_id
+            dict["title"] = title_data
+            dict["price"] = price
+            dict["seller"] = seller
+            dict["mouth_sold"] = mouth_sold
+            dict["link_sku"] = link_sku
+            yield Request(url=link_sku,callback=self.parse_detail,dont_filter=1,meta=dict.copy())
+
+        if next_pg:
+            next_url = "https://list.tmall.com/search_product.htm?spm=a220m.1000858.0.0&{}".format(next_pg[1:])
+            yield Request(url=next_url,callback=self.parse,dont_filter=1)
+
+    def parse_detail(self,response):
+        dict_data = response.meta
+        id = dict_data["id"]
+        cat_id = dict_data["cat_id"]
+        link_sku = dict_data["link_sku"]
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:55.0) Gecko/20100101 Firefox/55.0',
+                   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                   'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3', 'Accept-Encoding': 'gzip,br,deflate',
+                   'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1', "Referer": link_sku}
+
+        bsobj = bs(response.text)
+        scores = bsobj.find("div", {"class": "shop-rate"}).find_all("em", {"class": "count"})
+        score_data = [score.attrs["title"] for score in scores]
+        details = bsobj.find("ul", {"id": "J_AttrUL"}).find_all("li")
+        detail_data = [detail.get_text().replace("\xa0", "").split(":") for detail in details]
+
+        collect_url = "https://count.taobao.com/counter3?&callback=jsonp240&keys=ICCP_1_{}".format(id)
+
+
+
+        adr_url = " https://mdskip.taobao.com/core/initItemDetail.htm?showShopProm=false&tryBeforeBuy=false&isPurchaseMallPage=false&queryMemberRight=true&itemId={}&isForbidBuyItem=false&service3C=true&isUseInventoryCenter=false&isRegionLevel=false&isAreaSell=false&tmallBuySupport=true&sellerPreview=false&addressLevel=2&household=false&offlineShop=false&isApparel=false&cartEnable=true&isSecKill=false&callback=setMdskip&isg=null&cat_id={}"
+        adr_url = adr_url.format(id, cat_id)
+        res1 = requests.get(url=adr_url,headers=headers,timeout=3).text
+
+        fbc_url ="https://dsr-rate.tmall.com/list_dsr_info.htm?itemId={}&callback=jsonp240".format(id)
+        res2 = requests.get(url=fbc_url,headers=headers,timeout=3).text
+
+        tag_url = "https://rate.tmall.com/listTagClouds.htm?itemId={}&isAll=true&isInner=true&callback=jsonp950".format(id)
+        res3 = requests.get(url=tag_url,headers=headers,timeout=3).text
+
+    def parse_adr(self,response):
+        res = response.text
+        adr = eval(res.text.replace("setMdskip","").lstrip().replace("true","1").replace("false","0"))
+        adr = adr["defaultModel"]["deliveryDO"]["deliveryAddress"]
+
+    def parse_collect(self,response):
+        res = response.text
+        res_text = eval(res.text.replace("jsonp240","").replace(";",""))
+        collect = list(res_text.values())
+
+    def parse_fbc(self,response):
+        res = response.text
+        res = eval(res.replace("jsonp240",""))
+        rateTotal = res["dsr"]["rateTotal"]
+        gradeAvg = res["dsr"]["gradeAvg"]
+        print(rateTotal,gradeAvg)
+
+    def parse_tag(self,response):
+        res = response.text
+        tags = eval(res.text.lstrip().replace("jsonp950", "").replace("true", "1").replace("false", "0"))
+        tag_data = [[tagc["tag"],tagc["count"]] for tagc in tags["tags"]["tagClouds"]]
